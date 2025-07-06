@@ -1,0 +1,26 @@
+{
+  "name": "traffic-map-pwa",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "vercel dev",
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "copy-static": "cp src/index.html src/manifest.json src/service-worker.js public/ 2>/dev/null || true",
+    "postbuild": "npm run copy-static",
+    "deploy": "vercel --prod",
+    "serve": "cd public && python3 -m http.server 8000"
+  },
+  "dependencies": {
+    "@vercel/kv": "^1.0.1"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.19",
+    "@types/node": "^20.19.4",
+    "@types/supercluster": "^7.1.3",
+    "@vercel/node": "^3.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

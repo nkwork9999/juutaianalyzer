@@ -1,0 +1,199 @@
+# 交通量マップ PWA
+
+国土交通省の交通量APIを使用したリアルタイム交通量可視化・分析ツールのPWA版です。
+
+## 機能
+
+- 🗺️ **リアルタイム交通量表示** - 5分間隔で更新される交通量データを地図上に可視化
+- 📊 **空間分析** - 交通量の統計分析と空間的分布の解析
+- 🔬 **クラスター分析** - 重み付きk-means法による交通パターンの分類
+- 📱 **PWA対応** - オフライン動作とインストール可能なWebアプリ
+- 🔒 **セキュアな実装** - Vercel Serverless Functionsによる安全なAPI実装
+
+## 技術スタック
+
+### フロントエンド
+- Vanilla JavaScript (ES6+)
+- Leaflet.js - 地図表示
+- TensorFlow.js - クラスター分析
+- DuckDB WASM - ブラウザ内データ分析
+- Turf.js - 空間解析
+- Service Worker - PWA対応
+
+### バックエンド
+- Vercel Serverless Functions
+- Vercel KV - レート制限とキャッシュ
+- 国土交通省 WFS API
+
+## セットアップ
+
+### 前提条件
+- Node.js 18.0.0以上
+- Vercelアカウント
+
+### インストール
+
+1. リポジトリをクローン
+```bash
+git clone https://github.com/yourusername/traffic-map-pwa.git
+cd traffic-map-pwa
+```
+
+2. 依存関係をインストール
+```bash
+npm install
+```
+
+3. 環境変数を設定
+```bash
+# .env.local ファイルを作成
+MAX_REQUESTS_PER_MINUTE=60
+MAX_DISTANCE_KM=50
+ALLOWED_ORIGIN=https://your-domain.vercel.app
+```
+
+4. ローカル開発サーバーを起動
+```bash
+npm run dev
+```
+
+### デプロイ
+
+1. Vercel CLIでデプロイ
+```bash
+npm run deploy
+```
+
+2. または、GitHubと連携して自動デプロイ
+
+## ディレクトリ構成
+
+```
+traffic-map-pwa/
+├── api/
+│   └── traffic.js              # Vercel Serverless Function
+├── public/
+│   ├── index.html             # メインHTML
+│   ├── manifest.json          # PWAマニフェスト
+│   ├── service-worker.js      # Service Worker
+│   ├── css/
+│   │   └── styles.css         # スタイルシート
+│   ├── js/
+│   │   ├── app.js            # メインアプリケーション
+│   │   ├── map.js            # 地図関連機能
+│   │   ├── analysis.js       # 分析機能
+│   │   └── utils.js          # ユーティリティ
+│   └── icons/                # PWAアイコン
+├── vercel.json               # Vercel設定
+├── package.json              # npm設定
+└── README.md                # このファイル
+```
+
+## API仕様
+
+### GET /api/traffic
+
+交通量データを取得します。
+
+#### パラメータ
+- `latitude` (必須): 緯度（-90〜90）
+- `longitude` (必須): 経度（-180〜180）
+- `distance` (必須): 検索半径（メートル、1000〜50000）
+- `search_time` (任意): 検索時刻（ISO 8601形式）
+
+#### レスポンス
+```json
+{
+  "status": "success",
+  "timestamp": "2024-01-01T12:00:00.000Z",
+  "search_params": {
+    "latitude": 35.6812,
+    "longitude": 139.7671,
+    "distance": 25000,
+    "search_time": "2024-01-01T11:30:00.000Z"
+  },
+  "data": [
+    {
+      "observation_point_id": "POINT_1",
+      "observation_point_name": "観測地点 1",
+      "latitude": 35.6812,
+      "longitude": 139.7671,
+      "observation_date_time": "2024-01-01T11:30:00.000Z",
+      "traffic_volume": 120,
+      "small_vehicle": 80,
+      "large_vehicle": 40,
+      "direction": "上下合計",
+      "road_name": "国道（地整1）"
+    }
+  ]
+}
+```
+
+## 使い方
+
+### 基本操作
+1. 地域または都市を選択
+2. 「交通量データ取得」ボタンをクリック
+3. 地図上に交通量が表示されます
+
+### 分析機能
+- **空間分析**: 取得したデータの統計情報と空間的分布を分析
+- **クラスター分析**: 交通パターンに基づいて観測地点を分類
+
+### 地図設定
+- 4種類の地図タイル（標準、淡色、航空写真、白地図）
+- 検索半径の調整（1km〜50km）
+- 検索時刻の指定（省略時は30分前のデータ）
+
+## PWA機能
+
+### インストール
+1. Chrome/Edge/Safariでサイトにアクセス
+2. アドレスバーまたはメニューから「インストール」を選択
+3. ホーム画面にアイコンが追加されます
+
+### オフライン対応
+- 静的リソースはService Workerでキャッシュ
+- APIレスポンスも一時的にキャッシュ（5分間）
+- オフライン時は最後に取得したデータを表示
+
+## セキュリティ
+
+### 実装済みの対策
+- レート制限（1分間に60リクエストまで）
+- CSPヘッダーによるXSS対策
+- 入力値の厳密な検証
+- CORS設定
+- HTTPSの強制
+
+### APIキー
+国土交通省の交通量APIは公開APIのため、APIキーは不要です。
+
+## トラブルシューティング
+
+### データが表示されない
+- ネットワーク接続を確認
+- 検索範囲内に観測地点があるか確認
+- 時刻を変更してみる（5分単位）
+
+### PWAがインストールできない
+- HTTPSでアクセスしているか確認
+- manifest.jsonが正しく読み込まれているか確認
+- Service Workerが登録されているか確認
+
+## ライセンス
+
+MIT License
+
+## 謝辞
+
+- 国土交通省 - 交通量APIの提供
+- 国土地理院 - 地図タイルの提供
+
+## 貢献
+
+プルリクエストを歓迎します。大きな変更の場合は、まずissueを開いて変更内容を議論してください。
+
+## サポート
+
+問題や質問がある場合は、GitHubのissueを作成してください。

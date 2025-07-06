@@ -1,0 +1,40 @@
+{
+  "name": "交通量マップ - 国土交通省交通量API",
+  "short_name": "交通量マップ",
+  "description": "リアルタイム交通量データの可視化・分析ツール",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1a1a1a",
+  "theme_color": "#4a9eff",
+  "orientation": "any",
+  "lang": "ja",
+  "dir": "ltr",
+  "icons": [
+    {
+      "src": "/icons/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["navigation", "utilities", "productivity"],
+  "shortcuts": [
+    {
+      "name": "東京エリア",
+      "url": "/?city=tokyo",
+      "description": "東京の交通量を表示"
+    },
+    {
+      "name": "大阪エリア",
+      "url": "/?city=osaka",
+      "description": "大阪の交通量を表示"
+    }
+  ],
+  "prefer_related_applications": false
+}
