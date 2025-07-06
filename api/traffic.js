@@ -34,8 +34,13 @@ module.exports = (req, res) => {
     const dist = parseInt(distance);
 
     // 現在時刻から30分前
-    const searchDateTime = new Date();
-    searchDateTime.setMinutes(searchDateTime.getMinutes() - 30);
+    let searchDateTime;
+    if (req.query.search_time) {
+      searchDateTime = new Date(req.query.search_time);
+    } else {
+      searchDateTime = new Date();
+      searchDateTime.setMinutes(searchDateTime.getMinutes() - 30);
+    }
 
     // 5分単位に丸める
     const minutes = searchDateTime.getMinutes();
