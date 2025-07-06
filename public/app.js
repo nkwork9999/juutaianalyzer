@@ -1,5 +1,5 @@
 "use strict";
-// app.ts - モノリシックPWAアプリケーション
+// app.ts - モノリシックPWAアプリケーション（TensorFlow.js簡易版）
 // レート制限用の変数
 let lastApiCallTime = 0;
 const MIN_API_INTERVAL = 3000; // 3秒
@@ -128,7 +128,10 @@ const state = {
     highlightedMarkers: new Map(),
     spatialEnabled: false,
     hotspotLayer: null,
+    tfReady: false,
 };
+// TensorFlow.jsのグローバル変数
+let tf = null;
 // ユーティリティ関数
 function generateClientId() {
     const stored = localStorage.getItem("traffic-map-client-id");
@@ -181,6 +184,136 @@ function getCongestionLevel(_volume, percentile) {
     if (percentile >= 30)
         return "普通";
     return "空いている";
+}
+// TensorFlow.jsの初期化
+async function initializeTensorFlow() {
+    try {
+        // TensorFlow.jsをCDNから読み込み
+        const script = document.createElement("script");
+        script.src =
+            "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js";
+        script.onload = async () => {
+            // @ts-ignore
+            tf = window.tf;
+            console.log("TensorFlow.js loaded successfully");
+            state.tfReady = true;
+            // MLボタンを有効化
+            const mlBtn = document.getElementById("mlBtn");
+            if (mlBtn) {
+                mlBtn.classList.remove("disabled");
+                mlBtn.disabled = false;
+            }
+        };
+        document.head.appendChild(script);
+    }
+    catch (error) {
+        console.error("TensorFlow.js initialization error:", error);
+    }
+}
+// TensorFlow.jsを使った簡易的な異常検出
+async function performTensorFlowAnalysis() {
+    if (!tf || !state.tfReady || state.currentData.length === 0) {
+        showMessage("error", "TensorFlow.jsが未初期化またはデータがありません");
+        return;
+    }
+    const btn = document.getElementById("mlBtn");
+    const loading = document.getElementById("loading");
+    btn.disabled = true;
+    loading.classList.add("active");
+    hideMessage();
+    try {
+        // 交通量データをテンソルに変換
+        const volumes = state.currentData.map((p) => p.volume);
+        const volumeTensor = tf.tensor1d(volumes);
+        // 基本統計量を計算
+        const mean = volumeTensor.mean();
+        const std = tf.moments(volumeTensor).variance.sqrt();
+        // Z-スコアを計算（平均からの標準偏差単位での距離）
+        const zScores = volumeTensor.sub(mean).div(std);
+        const zScoresArray = await zScores.array();
+        // 異常値を検出（Z-スコアが2以上）
+        const anomalies = state.currentData.filter((_, idx) => Math.abs(zScoresArray[idx]) > 2);
+        // 結果を表示
+        let message = `【TensorFlow.js 異常値検出結果】\n`;
+        message += `平均交通量: ${Math.round((await mean.array()))} 台/5分\n`;
+        message += `標準偏差: ${Math.round((await std.array()))} 台/5分\n\n`;
+        if (anomalies.length > 0) {
+            message += `異常な交通量を検出した地点: ${anomalies.length}箇所\n\n`;
+            anomalies.slice(0, 5).forEach((point, idx) => {
+                const zScore = zScoresArray[state.currentData.indexOf(point)];
+                const type = zScore > 0 ? "異常に多い" : "異常に少ない";
+                message += `${idx + 1}. ${point.name}: ${point.volume}台/5分 [${type}]\n`;
+            });
+        }
+        else {
+            message += "異常な交通量の地点は検出されませんでした。";
+        }
+        // 異常地点をハイライト
+        highlightAnomalies(anomalies);
+        showMessage("success", message);
+        // テンソルのクリーンアップ
+        volumeTensor.dispose();
+        mean.dispose();
+        std.dispose();
+        zScores.dispose();
+    }
+    catch (error) {
+        console.error("TensorFlow analysis error:", error);
+        showMessage("error", "異常値検出に失敗しました");
+    }
+    finally {
+        btn.disabled = false;
+        loading.classList.remove("active");
+    }
+}
+// 異常地点をハイライト表示
+function highlightAnomalies(anomalies) {
+    if (!state.map || !state.markerGroup)
+        return;
+    // 既存のマーカーをリセット
+    state.markerGroup?.eachLayer((layer) => {
+        if (layer instanceof L.CircleMarker) {
+            layer.setStyle({ weight: 2, opacity: 1 });
+        }
+    });
+    // 異常地点をハイライト
+    anomalies.forEach((point) => {
+        state.markerGroup?.eachLayer((layer) => {
+            if (layer instanceof L.CircleMarker) {
+                const latlng = layer.getLatLng();
+                if (Math.abs(latlng.lat - point.latitude) < 0.0001 &&
+                    Math.abs(latlng.lng - point.longitude) < 0.0001) {
+                    // 異常地点を赤い枠線でハイライト
+                    layer.setStyle({
+                        weight: 4,
+                        opacity: 1,
+                        color: "#ff0000",
+                    });
+                    // パルスアニメーション効果を追加
+                    let scale = 1;
+                    let growing = true;
+                    const animate = () => {
+                        if (growing) {
+                            scale += 0.02;
+                            if (scale > 1.3)
+                                growing = false;
+                        }
+                        else {
+                            scale -= 0.02;
+                            if (scale < 1)
+                                growing = true;
+                        }
+                        layer.setRadius(layer.options.radius * scale);
+                        if (state.highlightedMarkers.has(point.id)) {
+                            requestAnimationFrame(animate);
+                        }
+                    };
+                    animate();
+                    state.highlightedMarkers.set(point.id, layer);
+                }
+            }
+        });
+    });
 }
 // DuckDB初期化（Spatial拡張付き）
 async function initializeDuckDB() {
@@ -247,7 +380,7 @@ async function initializeDuckDB() {
             dbStatusText.textContent = "DuckDB（ローカルのみ）";
     }
 }
-// 空間ホットスポット検出（ST_CollectとST_Envelopeを使用）
+// 空間ホットスポット検出
 async function detectSpatialHotspots() {
     if (!state.conn || !state.spatialEnabled || state.currentData.length === 0) {
         showMessage("error", "ホットスポット検出にはSpatial拡張とデータが必要です");
@@ -286,7 +419,7 @@ async function detectSpatialHotspots() {
       INSERT INTO traffic_points VALUES ${values};
     `);
         // グリッドベースのホットスポット検出
-        const gridSize = 0.1; // 約500m四方
+        const gridSize = 0.1; // 約10km四方
         const result = await state.conn.query(`
       WITH grid_data AS (
         SELECT 
@@ -657,7 +790,7 @@ function updateMap() {
         state.map.fitBounds(bounds, { padding: [50, 50], maxZoom: 13 });
     }
 }
-// 分析実行（DuckDB関連を削除）
+// 分析実行
 async function performAnalysis() {
     if (state.currentData.length === 0) {
         showMessage("error", "分析するデータがありません。先にデータを取得してください。");
@@ -1146,6 +1279,11 @@ function setupEventListeners() {
     if (hotspotBtn) {
         hotspotBtn.addEventListener("click", detectSpatialHotspots);
     }
+    // MLボタン（存在する場合）
+    const mlBtn = document.getElementById("mlBtn");
+    if (mlBtn) {
+        mlBtn.addEventListener("click", performTensorFlowAnalysis);
+    }
 }
 // UI初期化
 function initializeUI() {
@@ -1181,6 +1319,15 @@ function initializeUI() {
         hotspotBtn.innerHTML = '<i class="fas fa-fire"></i> ホットスポット検出';
         actionButtons.appendChild(hotspotBtn);
     }
+    // MLボタンを追加（HTMLに存在しない場合）
+    if (actionButtons && !document.getElementById("mlBtn")) {
+        const mlBtn = document.createElement("button");
+        mlBtn.id = "mlBtn";
+        mlBtn.className = "control-btn disabled";
+        mlBtn.disabled = true;
+        mlBtn.innerHTML = '<i class="fas fa-brain"></i> AI異常検出';
+        actionButtons.appendChild(mlBtn);
+    }
 }
 // アプリケーション初期化
 async function initialize() {
@@ -1195,6 +1342,8 @@ async function initialize() {
         setupEventListeners();
         // DuckDB初期化（非同期）
         initializeDuckDB();
+        // TensorFlow.js初期化（非同期）
+        initializeTensorFlow();
         // 初期検索範囲
         const defaultCity = CITY_COORDINATES.tokyo;
         updateSearchCircle(L.latLng(defaultCity.lat, defaultCity.lon));
@@ -1246,5 +1395,6 @@ window.TrafficMapApp = {
     performAnalysis,
     performClusterAnalysis,
     detectSpatialHotspots,
+    performTensorFlowAnalysis,
 };
 //# sourceMappingURL=app.js.map
