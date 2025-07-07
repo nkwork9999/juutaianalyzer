@@ -1,4 +1,4 @@
-// app.ts - モノリシックPWAアプリケーション（TensorFlow.js簡易版）
+// app.ts - モノリシックPWAアプリケーション（TensorFlow.js K-means版）
 
 // レート制限用の変数
 let lastApiCallTime = 0;
@@ -313,6 +313,8 @@ async function initializeTensorFlow(): Promise<void> {
       if (mlBtn) {
         mlBtn.classList.remove("disabled");
         (mlBtn as HTMLButtonElement).disabled = false;
+        (mlBtn as HTMLButtonElement).innerHTML =
+          '<i class="fas fa-brain"></i> TF.js K-means';
       }
     };
     document.head.appendChild(script);
@@ -321,7 +323,7 @@ async function initializeTensorFlow(): Promise<void> {
   }
 }
 
-// TensorFlow.jsを使った簡易的な異常検出
+// TensorFlow.jsを使ったk-meansクラスタリング
 async function performTensorFlowAnalysis(): Promise<void> {
   if (!tf || !state.tfReady || state.currentData.length === 0) {
     showMessage("error", "TensorFlow.jsが未初期化またはデータがありません");
@@ -336,114 +338,172 @@ async function performTensorFlowAnalysis(): Promise<void> {
   hideMessage();
 
   try {
-    // 交通量データをテンソルに変換
-    const volumes = state.currentData.map((p) => p.volume);
-    const volumeTensor = tf.tensor1d(volumes);
+    // クラスター数
+    const k = 5;
 
-    // 基本統計量を計算
-    const mean = volumeTensor.mean();
-    const std = tf.moments(volumeTensor).variance.sqrt();
+    // データの準備（正規化された特徴量）
+    const bounds = {
+      latMin: Math.min(...state.currentData.map((d) => d.latitude)),
+      latMax: Math.max(...state.currentData.map((d) => d.latitude)),
+      lonMin: Math.min(...state.currentData.map((d) => d.longitude)),
+      lonMax: Math.max(...state.currentData.map((d) => d.longitude)),
+      volMin: Math.min(...state.currentData.map((d) => d.volume)),
+      volMax: Math.max(...state.currentData.map((d) => d.volume)),
+    };
 
-    // Z-スコアを計算（平均からの標準偏差単位での距離）
-    const zScores = volumeTensor.sub(mean).div(std);
-    const zScoresArray = await zScores.array();
+    // 3次元特徴量（緯度、経度、交通量）
+    const features = state.currentData.map((point) => [
+      (point.latitude - bounds.latMin) / (bounds.latMax - bounds.latMin || 1),
+      (point.longitude - bounds.lonMin) / (bounds.lonMax - bounds.lonMin || 1),
+      (point.volume - bounds.volMin) / (bounds.volMax - bounds.volMin || 1),
+    ]);
 
-    // 異常値を検出（Z-スコアが2以上）
-    const anomalies = state.currentData.filter(
-      (_, idx) => Math.abs(zScoresArray[idx]) > 2
-    );
+    // テンソルに変換
+    const dataTensor = tf.tensor2d(features);
 
-    // 結果を表示
-    let message = `【TensorFlow.js 異常値検出結果】\n`;
-    message += `平均交通量: ${Math.round(
-      (await mean.array()) as number
-    )} 台/5分\n`;
-    message += `標準偏差: ${Math.round(
-      (await std.array()) as number
-    )} 台/5分\n\n`;
+    // k-means++初期化（TensorFlow.js版）
+    const centroids = await initializeKMeansPlusPlus(dataTensor, k);
 
-    if (anomalies.length > 0) {
-      message += `異常な交通量を検出した地点: ${anomalies.length}箇所\n\n`;
-      anomalies.slice(0, 5).forEach((point, idx) => {
-        const zScore = zScoresArray[state.currentData.indexOf(point)];
-        const type = zScore > 0 ? "異常に多い" : "異常に少ない";
-        message += `${idx + 1}. ${point.name}: ${
-          point.volume
-        }台/5分 [${type}]\n`;
-      });
-    } else {
-      message += "異常な交通量の地点は検出されませんでした。";
+    // k-meansクラスタリング実行
+    const maxIterations = 50;
+    let currentCentroids = centroids;
+    let assignments: number[] = [];
+
+    for (let iter = 0; iter < maxIterations; iter++) {
+      // 各点から各セントロイドまでの距離を計算
+      const expandedData = dataTensor.expandDims(1); // [N, 1, 3]
+      const expandedCentroids = currentCentroids.expandDims(0); // [1, k, 3]
+
+      // ユークリッド距離の計算
+      const distances = expandedData
+        .sub(expandedCentroids)
+        .square()
+        .sum(2)
+        .sqrt();
+
+      // 最も近いセントロイドを見つける
+      const newAssignments = (await distances.argMin(1).array()) as number[];
+
+      // 収束チェック
+      if (iter > 0 && assignments.every((a, i) => a === newAssignments[i])) {
+        console.log(`Converged at iteration ${iter}`);
+        break;
+      }
+
+      assignments = newAssignments;
+
+      // 新しいセントロイドを計算
+      const newCentroids: number[][] = [];
+      for (let i = 0; i < k; i++) {
+        const clusterIndices = assignments
+          .map((a, idx) => (a === i ? idx : -1))
+          .filter((idx) => idx !== -1);
+
+        if (clusterIndices.length > 0) {
+          const clusterData = tf.gather(dataTensor, clusterIndices);
+          const mean = (await clusterData.mean(0).array()) as number[];
+          newCentroids.push(mean);
+          clusterData.dispose();
+        } else {
+          // 空のクラスターの場合は前のセントロイドを保持
+          const prevCentroid = (await currentCentroids
+            .slice([i, 0], [1, -1])
+            .squeeze()
+            .array()) as number[];
+          newCentroids.push(prevCentroid);
+        }
+      }
+
+      currentCentroids.dispose();
+      currentCentroids = tf.tensor2d(newCentroids);
+      distances.dispose();
     }
 
-    // 異常地点をハイライト
-    highlightAnomalies(anomalies);
+    // 結果の処理
+    const clusteredData = state.currentData.map((point, idx) => ({
+      ...point,
+      cluster: assignments[idx],
+      features: features[idx],
+    })) as ClusteredPoint[];
+
+    // クラスター統計を計算
+    const clusterStats = calculateClusterStats(clusteredData);
+
+    // 結果を表示
+    displaySpatialClusters(clusteredData);
+
+    let message = `【TensorFlow.js K-meansクラスタリング結果】\n`;
+    message += `${k}個のクラスターに分類しました\n\n`;
+
+    clusterStats.forEach((stat, idx) => {
+      message += `クラスター${idx + 1}: ${stat.count}地点\n`;
+      message += `  平均交通量: ${Math.round(stat.avgVolume)}台/5分\n`;
+      message += `  中心位置: (${stat.center.lat.toFixed(
+        4
+      )}, ${stat.center.lon.toFixed(4)})\n\n`;
+    });
+
+    message += "※位置情報と交通量の両方を考慮したクラスタリングです";
 
     showMessage("success", message);
 
     // テンソルのクリーンアップ
-    volumeTensor.dispose();
-    mean.dispose();
-    std.dispose();
-    zScores.dispose();
+    dataTensor.dispose();
+    currentCentroids.dispose();
   } catch (error) {
-    console.error("TensorFlow analysis error:", error);
-    showMessage("error", "異常値検出に失敗しました");
+    console.error("TensorFlow k-means error:", error);
+    showMessage("error", "K-meansクラスタリングに失敗しました");
   } finally {
     btn.disabled = false;
     loading.classList.remove("active");
   }
 }
 
-// 異常地点をハイライト表示
-function highlightAnomalies(anomalies: TrafficPoint[]): void {
-  if (!state.map || !state.markerGroup) return;
+// k-means++初期化（TensorFlow.js版）
+async function initializeKMeansPlusPlus(data: any, k: number): Promise<any> {
+  const numPoints = data.shape[0];
+  const centers: number[][] = [];
 
-  // 既存のマーカーをリセット
-  state.markerGroup?.eachLayer((layer: any) => {
-    if (layer instanceof L.CircleMarker) {
-      layer.setStyle({ weight: 2, opacity: 1 });
-    }
-  });
+  // 最初の中心をランダムに選択
+  const firstIdx = Math.floor(Math.random() * numPoints);
+  const firstCenter = (await data
+    .slice([firstIdx, 0], [1, -1])
+    .array()) as number[][];
+  centers.push(firstCenter[0]);
 
-  // 異常地点をハイライト
-  anomalies.forEach((point) => {
-    state.markerGroup?.eachLayer((layer: any) => {
-      if (layer instanceof L.CircleMarker) {
-        const latlng = layer.getLatLng();
-        if (
-          Math.abs(latlng.lat - point.latitude) < 0.0001 &&
-          Math.abs(latlng.lng - point.longitude) < 0.0001
-        ) {
-          // 異常地点を赤い枠線でハイライト
-          layer.setStyle({
-            weight: 4,
-            opacity: 1,
-            color: "#ff0000",
-          });
+  // 残りのk-1個の中心を選択
+  for (let i = 1; i < k; i++) {
+    // 各点から最も近い中心までの距離を計算
+    const centersTensor = tf.tensor2d(centers);
+    const expandedData = data.expandDims(1);
+    const expandedCenters = centersTensor.expandDims(0);
 
-          // パルスアニメーション効果を追加
-          let scale = 1;
-          let growing = true;
-          const animate = () => {
-            if (growing) {
-              scale += 0.02;
-              if (scale > 1.3) growing = false;
-            } else {
-              scale -= 0.02;
-              if (scale < 1) growing = true;
-            }
-            layer.setRadius(layer.options.radius * scale);
-            if (state.highlightedMarkers.has(point.id)) {
-              requestAnimationFrame(animate);
-            }
-          };
-          animate();
+    const distances = expandedData.sub(expandedCenters).square().sum(2).sqrt();
+    const minDistances = distances.min(1);
 
-          state.highlightedMarkers.set(point.id, layer);
-        }
-      }
-    });
-  });
+    // 距離の二乗を確率として使用
+    const probabilities = minDistances.square();
+    const cumSum = (await probabilities.cumsum().array()) as number[];
+    const total = cumSum[cumSum.length - 1];
+
+    // ルーレット選択
+    const random = Math.random() * total;
+    let selectedIdx = cumSum.findIndex((val) => val >= random);
+    if (selectedIdx === -1) selectedIdx = numPoints - 1;
+
+    const newCenter = (await data
+      .slice([selectedIdx, 0], [1, -1])
+      .array()) as number[][];
+    centers.push(newCenter[0]);
+
+    // クリーンアップ
+    centersTensor.dispose();
+    distances.dispose();
+    minDistances.dispose();
+    probabilities.dispose();
+  }
+
+  return tf.tensor2d(centers);
 }
 
 // DuckDB初期化（Spatial拡張付き）
@@ -1651,7 +1711,7 @@ function initializeUI(): void {
     mlBtn.id = "mlBtn";
     mlBtn.className = "control-btn disabled";
     mlBtn.disabled = true;
-    mlBtn.innerHTML = '<i class="fas fa-brain"></i> AI異常検出';
+    mlBtn.innerHTML = '<i class="fas fa-brain"></i> TF.js K-means';
     actionButtons.appendChild(mlBtn);
   }
 }
